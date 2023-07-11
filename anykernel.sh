@@ -1,108 +1,106 @@
-### AnyKernel3 Ramdisk Mod Script
-## osm0sis @ xda-developers
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
 
-### AnyKernel setup
+## AnyKernel setup
 # begin properties
 properties() { '
-kernel.string=ExampleKernel by osm0sis @ xda-developers
-do.devicecheck=1
-do.modules=0
+kernel.string=Kirisakura-Kernel for Asus Rog Phone 2 aka Yoda by freak07 @ xda-developers
+do.devicecheck=0
+do.modules=1
 do.systemless=1
 do.cleanup=1
 do.cleanuponabort=0
-device.name1=maguro
-device.name2=toro
-device.name3=toroplus
-device.name4=tuna
+device.name1=
+device.name2=
+device.name3=
+device.name4=
 device.name5=
-supported.versions=
-supported.patchlevels=
+supported.versions=10
+supported.patchlevels=2020-12 -
 '; } # end properties
 
-### AnyKernel install
-# begin attributes
-attributes() {
-set_perm_recursive 0 0 755 644 $ramdisk/*;
-set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-} # end attributes
-
-
-## boot shell variables
-block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;
-is_slot_device=0;
+# shell variables
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=1;
 ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-# import functions/variables and setup patching - see for reference (DO NOT REMOVE)
-. tools/ak3-core.sh && attributes;
-
-# boot install
-dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk
-
-# init.rc
-backup_file init.rc;
-replace_string init.rc "cpuctl cpu,timer_slack" "mount cgroup none /dev/cpuctl cpu" "mount cgroup none /dev/cpuctl cpu,timer_slack";
-
-# init.tuna.rc
-backup_file init.tuna.rc;
-insert_line init.tuna.rc "nodiratime barrier=0" after "mount_all /fstab.tuna" "\tmount ext4 /dev/block/platform/omap/omap_hsmmc.0/by-name/userdata /data remount nosuid nodev noatime nodiratime barrier=0";
-append_file init.tuna.rc "bootscript" init.tuna;
-
-# fstab.tuna
-backup_file fstab.tuna;
-patch_fstab fstab.tuna /system ext4 options "noatime,barrier=1" "noatime,nodiratime,barrier=0";
-patch_fstab fstab.tuna /cache ext4 options "barrier=1" "barrier=0,nomblk_io_submit";
-patch_fstab fstab.tuna /data ext4 options "data=ordered" "nomblk_io_submit,data=writeback";
-append_file fstab.tuna "usbdisk" fstab;
-
-write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
-## end boot install
 
 
-## init_boot shell variables
-#block=init_boot;
-#is_slot_device=1;
-#ramdisk_compression=auto;
-#patch_vbmeta_flag=auto;
-
-# reset for init_boot patching
-#reset_ak;
-
-# init_boot install
-#dump_boot; # unpack ramdisk since it is the new first stage init ramdisk where overlay.d must go
-
-#write_boot;
-## end init_boot install
+## AnyKernel methods (DO NOT CHANGE)
+# import patching functions/variables - see for reference
+. tools/ak3-core.sh;
 
 
-## vendor_kernel_boot shell variables
-#block=vendor_kernel_boot;
-#is_slot_device=1;
-#ramdisk_compression=auto;
-#patch_vbmeta_flag=auto;
+## AnyKernel file attributes
+# set permissions/ownership for included ramdisk files
+set_perm_recursive 0 0 750 750 $ramdisk/*;
 
-# reset for vendor_kernel_boot patching
-#reset_ak;
+## begin vendor changes
+mount -o rw,remount -t auto /vendor >/dev/null;
 
-# vendor_kernel_boot install
-#split_boot; # skip unpack/repack ramdisk, e.g. for dtb on devices with hdr v4 and vendor_kernel_boot
+cp -rf /tmp/anykernel/patch/mixer_paths_ZS660KL_EU.xml /vendor/etc/mixer_paths_ZS660KL_EU.xml;
+set_perm 0 0 0644 /vendor/etc/mixer_paths_ZS660KL_EU.xml;
 
-#flash_boot;
-## end vendor_kernel_boot install
+cp -rf /tmp/anykernel/patch/msm_irqbalance.conf /vendor/etc/msm_irqbalance.conf;
+set_perm 0 0 0644 /vendor/etc/msm_irqbalance.conf;
+
+# Make a backup of init.target.rc
+restore_file /vendor/etc/init/hw/init.target.rc;
 
 
-## vendor_boot shell variables
-#block=vendor_boot;
-#is_slot_device=1;
-#ramdisk_compression=auto;
-#patch_vbmeta_flag=auto;
+## AnyKernel install
+dump_boot;
 
-# reset for vendor_boot patching
-#reset_ak;
+# remove old root patch avoidance hack
+patch_cmdline "skip_override" "";
 
-# vendor_boot install
-#dump_boot; # use split_boot to skip ramdisk unpack, e.g. for dtb on devices with hdr v4 but no vendor_kernel_boot
+#F2FS Optimization (anykernel implementation by @kdrag0n)
+if mountpoint -q /data; then
+  # Optimize F2FS extension list (@arter97)
+  for list_path in $(find /sys/fs/f2fs* -name extension_list); do
+    hash="$(md5sum $list_path | sed 's/extenstion/extension/g' | cut -d' ' -f1)"
 
-#write_boot; # use flash_boot to skip ramdisk repack, e.g. for dtb on devices with hdr v4 but no vendor_kernel_boot
-## end vendor_boot install
+    # Skip update if our list is already active
+    if [[ $hash == "43df40d20dcb96aa7e8af0e3d557d086" ]]; then
+      echo "Extension list up-to-date: $list_path"
+      continue
+    fi
+
+    ui_print "  • Optimizing F2FS extension list"
+    echo "Updating extension list: $list_path"
+
+    echo "Clearing extension list"
+
+    hot_count="$(grep -n 'hot file extens' $list_path | cut -d':' -f1)"
+    list_len="$(cat $list_path | wc -l)"
+    cold_count="$((list_len - hot_count))"
+
+    cold_list="$(head -n$((hot_count - 1)) $list_path | grep -v ':')"
+    hot_list="$(tail -n$cold_count $list_path)"
+
+    for ext in $cold_list; do
+      [ ! -z $ext ] && echo "[c]!$ext" > $list_path
+    done
+
+    for ext in $hot_list; do
+      [ ! -z $ext ] && echo "[h]!$ext" > $list_path
+    done
+
+    echo "Writing new extension list"
+
+    for ext in $(cat $home/f2fs-cold.list | grep -v '#'); do
+      [ ! -z $ext ] && echo "[c]$ext" > $list_path
+    done
+
+    for ext in $(cat $home/f2fs-hot.list); do
+      [ ! -z $ext ] && echo "[h]$ext" > $list_path
+    done
+  done
+fi
+
+# end ramdisk changes
+
+write_boot;
+## end install
+
+	ui_print " "; ui_print "Kirisakura-Kernel successfully flashed. Enjoy your device and have a nice day!";
 
